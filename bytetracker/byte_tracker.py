@@ -106,7 +106,10 @@ class STrack(BaseTrack):
         if new_id:
             self.track_id = self.next_id()
         self.score = new_track.score
-        self.cls = new_track.cls
+        # Only update class if new class is not 5 (unknown/ambiguous)
+        # This preserves the known class when object becomes temporarily ambiguous
+        # if new_track.cls != 5:
+        #     self.cls = new_track.cls
 
     def update(self, new_track, frame_id):
         """
@@ -118,7 +121,6 @@ class STrack(BaseTrack):
         """
         self.frame_id = frame_id
         self.tracklet_len += 1
-        # self.cls = cls
 
         new_tlwh = new_track.tlwh
         self.mean, self.covariance = self.kalman_filter.update(
@@ -128,6 +130,10 @@ class STrack(BaseTrack):
         self.is_activated = True
 
         self.score = new_track.score
+        # Only update class if new class is not 5 (unknown/ambiguous)
+        # This preserves the known class when object becomes temporarily ambiguous
+        # if new_track.cls != 5:
+        #     self.cls = new_track.cls
 
     @property
     # @jit(nopython=True)
@@ -202,6 +208,8 @@ class BYTETracker(object):
         self.buffer_size = int(frame_rate / 30.0 * track_buffer)
         self.max_time_lost = self.buffer_size
         self.kalman_filter = KalmanFilter()
+
+        print(f"[Tracker] Initialized with track_thresh={track_thresh}, track_buffer={track_buffer}, match_thresh={match_thresh}, frame_rate={frame_rate}")
 
     def update(self, dets, _ = None):
         self.frame_id += 1
@@ -366,11 +374,10 @@ class BYTETracker(object):
         outputs = []
         for t in output_stracks:
             output = []
-            tlwh = t.tlwh
+            # Use tlbr property which correctly converts tlwh to xyxy format
+            # tlbr = top-left-bottom-right = [x1, y1, x2, y2]
+            xyxy = t.tlbr
             tid = t.track_id
-            tlwh = np.expand_dims(tlwh, axis=0)
-            xyxy = xywh2xyxy(tlwh)
-            xyxy = np.squeeze(xyxy, axis=0)
             output.extend(xyxy)
             output.append(tid)
             output.append(t.cls)
