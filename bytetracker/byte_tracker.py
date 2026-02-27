@@ -108,8 +108,8 @@ class STrack(BaseTrack):
         self.score = new_track.score
         # Only update class if new class is not 5 (unknown/ambiguous)
         # This preserves the known class when object becomes temporarily ambiguous
-        # if new_track.cls != 5:
-        #     self.cls = new_track.cls
+        if new_track.cls != 5:
+            self.cls = new_track.cls
 
     def update(self, new_track, frame_id):
         """
@@ -132,8 +132,8 @@ class STrack(BaseTrack):
         self.score = new_track.score
         # Only update class if new class is not 5 (unknown/ambiguous)
         # This preserves the known class when object becomes temporarily ambiguous
-        # if new_track.cls != 5:
-        #     self.cls = new_track.cls
+        if new_track.cls != 5:
+            self.cls = new_track.cls
 
     @property
     # @jit(nopython=True)
@@ -192,7 +192,7 @@ class STrack(BaseTrack):
 
 class BYTETracker(object):
     def __init__(
-        self, track_thresh=0.45, track_buffer=25, match_thresh=0.8, frame_rate=30
+        self, track_thresh=0.45, track_buffer=25, match_thresh=0.8, frame_rate=30, det_thresh=None, second_match_thresh=None, unconfirmed_match_thresh=None
     ):
         self.tracked_stracks = []  # type: list[STrack]
         self.lost_stracks = []  # type: list[STrack]
@@ -204,12 +204,22 @@ class BYTETracker(object):
         self.track_thresh = track_thresh
         self.match_thresh = match_thresh
         # self.det_thresh = track_thresh
-        self.det_thresh = track_thresh + 0.1
+        if det_thresh is None:
+            self.det_thresh = track_thresh + 0.1
+        else:
+            self.det_thresh = det_thresh
+        # self.det_thresh = track_thresh + 0.1
+        
+        # Make second association and unconfirmed track thresholds configurable
+        # Default to 0.5 for backward compatibility, but allow override for sensitive mode
+        self.second_match_thresh = second_match_thresh if second_match_thresh is not None else 0.5
+        self.unconfirmed_match_thresh = unconfirmed_match_thresh if unconfirmed_match_thresh is not None else 0.7
+        
         self.buffer_size = int(frame_rate / 30.0 * track_buffer)
         self.max_time_lost = self.buffer_size
         self.kalman_filter = KalmanFilter()
 
-        print(f"[Tracker] Initialized with track_thresh={track_thresh}, track_buffer={track_buffer}, match_thresh={match_thresh}, frame_rate={frame_rate}")
+        print(f"[Tracker] Initialized with track_thresh={track_thresh}, track_buffer={track_buffer}, match_thresh={match_thresh}, frame_rate={frame_rate}, det_thresh={self.det_thresh}, second_match_thresh={self.second_match_thresh}, unconfirmed_match_thresh={self.unconfirmed_match_thresh}")
 
     def update(self, dets, _ = None):
         self.frame_id += 1
@@ -239,7 +249,7 @@ class BYTETracker(object):
             confs = confs
 
         remain_inds = confs > self.track_thresh
-        inds_low = confs > 0.1
+        inds_low = confs > self.det_thresh
         inds_high = confs < self.track_thresh
 
         inds_second = np.logical_and(inds_low, inds_high)
@@ -251,7 +261,7 @@ class BYTETracker(object):
         scores_second = confs[inds_second]
 
         clss_keep = classes[remain_inds]
-        clss_second = classes[remain_inds]
+        clss_second = classes[inds_second]
 
         if len(dets) > 0:
             """Detections"""
@@ -308,7 +318,7 @@ class BYTETracker(object):
         ]
         dists = matching.iou_distance(r_tracked_stracks, detections_second)
         matches, u_track, u_detection_second = matching.linear_assignment(
-            dists, thresh=0.5
+            dists, thresh=self.second_match_thresh
         )
         for itracked, idet in matches:
             track = r_tracked_stracks[itracked]
@@ -332,7 +342,7 @@ class BYTETracker(object):
         # if not self.args.mot20:
         dists = matching.fuse_score(dists, detections)
         matches, u_unconfirmed, u_detection = matching.linear_assignment(
-            dists, thresh=0.7
+            dists, thresh=self.unconfirmed_match_thresh
         )
         for itracked, idet in matches:
             unconfirmed[itracked].update(detections[idet], self.frame_id)
