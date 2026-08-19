@@ -89,9 +89,10 @@ class STrack(BaseTrack):
 
         self.tracklet_len = 0
         self.state = TrackState.Tracked
-        if frame_id == 1:
-            self.is_activated = True
-        # self.is_activated = True
+        # A new tracklet stays unconfirmed until a second detection is associated
+        # with it (see update()); only confirmed tracks are reported. Do not
+        # special-case the first frame here - that would let whatever happens to be
+        # in frame 1 skip confirmation entirely and linger as a lost track.
         self.frame_id = frame_id
         self.start_frame = frame_id
 
