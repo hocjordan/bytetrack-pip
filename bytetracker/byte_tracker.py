@@ -89,9 +89,10 @@ class STrack(BaseTrack):
 
         self.tracklet_len = 0
         self.state = TrackState.Tracked
-        if frame_id == 1:
-            self.is_activated = True
-        # self.is_activated = True
+        # A new tracklet stays unconfirmed until a second detection is associated
+        # with it (see update()); only confirmed tracks are reported. Do not
+        # special-case the first frame here - that would let whatever happens to be
+        # in frame 1 skip confirmation entirely and linger as a lost track.
         self.frame_id = frame_id
         self.start_frame = frame_id
 
@@ -106,7 +107,10 @@ class STrack(BaseTrack):
         if new_id:
             self.track_id = self.next_id()
         self.score = new_track.score
-        self.cls = new_track.cls
+        # Only update class if new class is not 5 (unknown/ambiguous)
+        # This preserves the known class when object becomes temporarily ambiguous
+        if new_track.cls != 5:
+            self.cls = new_track.cls
 
     def update(self, new_track, frame_id):
         """
@@ -118,7 +122,6 @@ class STrack(BaseTrack):
         """
         self.frame_id = frame_id
         self.tracklet_len += 1
-        # self.cls = cls
 
         new_tlwh = new_track.tlwh
         self.mean, self.covariance = self.kalman_filter.update(
@@ -128,6 +131,10 @@ class STrack(BaseTrack):
         self.is_activated = True
 
         self.score = new_track.score
+        # Only update class if new class is not 5 (unknown/ambiguous)
+        # This preserves the known class when object becomes temporarily ambiguous
+        if new_track.cls != 5:
+            self.cls = new_track.cls
 
     @property
     # @jit(nopython=True)
@@ -186,7 +193,7 @@ class STrack(BaseTrack):
 
 class BYTETracker(object):
     def __init__(
-        self, track_thresh=0.45, track_buffer=25, match_thresh=0.8, frame_rate=30
+        self, track_thresh=0.45, track_buffer=25, match_thresh=0.8, frame_rate=30, det_thresh=None, second_match_thresh=None, unconfirmed_match_thresh=None
     ):
         self.tracked_stracks = []  # type: list[STrack]
         self.lost_stracks = []  # type: list[STrack]
@@ -198,10 +205,22 @@ class BYTETracker(object):
         self.track_thresh = track_thresh
         self.match_thresh = match_thresh
         # self.det_thresh = track_thresh
-        self.det_thresh = track_thresh + 0.1
+        if det_thresh is None:
+            self.det_thresh = track_thresh + 0.1
+        else:
+            self.det_thresh = det_thresh
+        # self.det_thresh = track_thresh + 0.1
+        
+        # Make second association and unconfirmed track thresholds configurable
+        # Default to 0.5 for backward compatibility, but allow override for sensitive mode
+        self.second_match_thresh = second_match_thresh if second_match_thresh is not None else 0.5
+        self.unconfirmed_match_thresh = unconfirmed_match_thresh if unconfirmed_match_thresh is not None else 0.7
+        
         self.buffer_size = int(frame_rate / 30.0 * track_buffer)
         self.max_time_lost = self.buffer_size
         self.kalman_filter = KalmanFilter()
+
+        print(f"[Tracker] Initialized with track_thresh={track_thresh}, track_buffer={track_buffer}, match_thresh={match_thresh}, frame_rate={frame_rate}, det_thresh={self.det_thresh}, second_match_thresh={self.second_match_thresh}, unconfirmed_match_thresh={self.unconfirmed_match_thresh}")
 
     def update(self, dets, _ = None):
         self.frame_id += 1
@@ -231,7 +250,7 @@ class BYTETracker(object):
             confs = confs
 
         remain_inds = confs > self.track_thresh
-        inds_low = confs > 0.1
+        inds_low = confs > self.det_thresh
         inds_high = confs < self.track_thresh
 
         inds_second = np.logical_and(inds_low, inds_high)
@@ -243,7 +262,7 @@ class BYTETracker(object):
         scores_second = confs[inds_second]
 
         clss_keep = classes[remain_inds]
-        clss_second = classes[remain_inds]
+        clss_second = classes[inds_second]
 
         if len(dets) > 0:
             """Detections"""
@@ -300,7 +319,7 @@ class BYTETracker(object):
         ]
         dists = matching.iou_distance(r_tracked_stracks, detections_second)
         matches, u_track, u_detection_second = matching.linear_assignment(
-            dists, thresh=0.5
+            dists, thresh=self.second_match_thresh
         )
         for itracked, idet in matches:
             track = r_tracked_stracks[itracked]
@@ -324,7 +343,7 @@ class BYTETracker(object):
         # if not self.args.mot20:
         dists = matching.fuse_score(dists, detections)
         matches, u_unconfirmed, u_detection = matching.linear_assignment(
-            dists, thresh=0.7
+            dists, thresh=self.unconfirmed_match_thresh
         )
         for itracked, idet in matches:
             unconfirmed[itracked].update(detections[idet], self.frame_id)
@@ -366,11 +385,10 @@ class BYTETracker(object):
         outputs = []
         for t in output_stracks:
             output = []
-            tlwh = t.tlwh
+            # Use tlbr property which correctly converts tlwh to xyxy format
+            # tlbr = top-left-bottom-right = [x1, y1, x2, y2]
+            xyxy = t.tlbr
             tid = t.track_id
-            tlwh = np.expand_dims(tlwh, axis=0)
-            xyxy = xywh2xyxy(tlwh)
-            xyxy = np.squeeze(xyxy, axis=0)
             output.extend(xyxy)
             output.append(tid)
             output.append(t.cls)
